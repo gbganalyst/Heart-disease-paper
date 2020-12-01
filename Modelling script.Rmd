@@ -1,0 +1,887 @@
+---
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, 
+                      tidy = 'styler', 
+                      comment = NA,
+                      message = FALSE,
+                      warning = FALSE)
+```
+
+This RMarkdown script is designed to run chunk by chunk. You can press `ctrl+shift+Enter` to run each chunk.
+
+Example of code chunk
+
+```{r chunk_name}
+2+2
+# Run me with ctrl+shift+Enter
+```
+This program will download from the internet and install the latest version of the packages below if they are not already installed in your R environment. It is necessary to have internet connection to download those packages. 
+
+If for any reason this program fails to run, please make sure that the packages are installed.
+
+```{r R_library, include=TRUE}
+
+#Import packages
+
+data_exploration_packages <- c("tidyverse", "readxl", "writexl", "inspectdf")
+
+machine_learning_packages <- c("caret", "car", "kernlab", "rpart", "randomForest", "class", "ada", "rda", "e1071", "nnet", "ipred", "dbarts", "klaR", "glmnet", "earth")
+
+table_formating_packages <- c("knitr", "kableExtra")
+
+
+if (!require(install.load)) {
+  install.packages("install.load")
+}
+
+install_load(c(data_exploration_packages, machine_learning_packages, table_formating_packages))
+
+```
+Access to the dataset can be found from the chunck below:
+
+```{r Cleveland heart disease dataset}
+browseURL("https://archive.ics.uci.edu/ml/datasets/Heart+Disease")
+```
+```{r Statlog heart disease dataset}
+browseURL("http://archive.ics.uci.edu/ml/datasets/statlog+(heart)")
+```
+
+# Importing and preprocessing of Cleveland dataset
+
+```{r Cleveland dataset}
+
+# We recoded some levels of categorical features in MS-Excel for both Cleveland and Statlog heart disease database so that they can match each other
+
+cleveland_data <- read_xlsx('data/heart_disease_database.xlsx', sheet = 1) %>% mutate(restecg = as.character(restecg))
+```
+
+```{r data_processing1}
+
+# Data wrangling for Cleveland dataset
+
+cleveland_data <- cleveland_data %>% 
+  na_if("?") # replacing '?' to NA
+
+# count missing value
+
+cleveland_data %>% inspect_na() %>% show_plot()
+
+
+# drop rows with NA
+
+cleveland_data <- cleveland_data %>% drop_na() 
+
+dim(cleveland_data)
+```
+  
+Experiments with the Cleveland database have concentrated on simply attempting to distinguish presence (values 1,2,3,4) from absence (value 0) in the predicted attribute (num)
+
+So we are recoding label to (1-4)- present and (0)- absent.
+  
+  
+```{r data_processing2}
+cleveland_data <- 
+  cleveland_data %>% 
+  mutate(heart_disease_present= factor(ifelse(num == 0, 'absent', 'present')))
+
+# removing variable num which was the label with values 1:4
+
+cleveland_data <- cleveland_data %>% dplyr::select(-num)
+```
+
+We changed the data type in Cleveland data to the right type 
+
+```{r data_processing3, include = FALSE}
+cleveland_data <- 
+  cleveland_data %>% 
+  mutate(across(!where(is_double) , as_factor))
+```
+
+`vt` function This function will output a descriptive variable table that can be viewed continuously while working with data
+
+
+```{r vtable}
+
+label <-  data.frame(age = "age in years",
+                     sex = "sex of the patients",
+                     cp = "chest pain type",
+                     trestbps = "resting blood pressure (in mm Hg on admission to the hospital)",
+                     chol= "serum cholestoral in mg/dl",
+                     fbs = "fasting blood sugar > 120 mg/dl",
+                     restecg = "resting electrocardiographic results",
+                     thalach = "maximum heart rate achieved (beats per minute)",
+                     exang = "exercise induced angina",
+                     oldpeak = "ST depression induced by exercise relative to rest, a measure of abnormality in electrocardiograms",
+                     slope = "the slope of the peak exercise ST segment",
+                     ca = "number of major vessels colored by flourosopy",
+                     thal = "results of thallium stress test measuring blood flow to the heart")
+                     
+vtable::vt(cleveland_data, labels = label, factor.limit = 0) 
+```
+
+```{r Scaling_1}
+
+# Scaling the continuous variables
+
+preProcess_scale_model <- preProcess(cleveland_data, method = c("center", "scale"))
+
+cleveland_data_scaling <- predict(preProcess_scale_model, cleveland_data)
+```
+
+```{r One_hot_encoding_1}
+
+# Removing the class column on train data to be able to create a one hot encoding
+
+cleveland_data_one_hot <- cleveland_data_scaling[-length(cleveland_data_scaling)]
+
+# `fullRank = T` to avoid dummmy trap
+
+dummies <- dummyVars("~.", data = cleveland_data_one_hot, fullRank = TRUE)
+
+cleveland_data_one_hot <- predict(dummies, newdata = cleveland_data_one_hot)
+
+# Convert to dataframe
+
+cleveland_data_one_hot <- as_tibble(cleveland_data_one_hot)
+
+```
+
+
+```{r Feature_selection_1}
+# Eliminate low variance features
+
+low_variance_cols <- nearZeroVar(cleveland_data_one_hot, freqCut = 95 / 5, uniqueCut = 10, saveMetrics = FALSE)
+
+
+# dropped restecg.1 variable
+
+cleveland_data_low_var_rm <- cleveland_data_one_hot[, -low_variance_cols]
+
+# recursive features selection
+
+rfProfile <- rfe(cleveland_data_low_var_rm, cleveland_data$heart_disease_present,
+                  sizes = c(1:19),
+                 rfeControl = rfeControl(functions = rfFuncs), number = 200)
+
+plot(rfProfile, type = c("o", "g"))
+
+predictors(rfProfile)
+
+varImp(rfProfile)
+
+# We shall include features that have variable of importance greater than or equal to 10
+
+features_selection  <-   varImp(rfProfile) %>% rownames_to_column(var = 'Features') %>% dplyr::filter(Overall >= 10) %>% pull(Features)
+
+
+features <- cleveland_data_low_var_rm %>% dplyr::select(all_of(features_selection))
+```
+
+## Evaluation metric
+
+```{r R_Function}
+
+# A function that generate data for class prediction probabilities and class prediction outcome
+
+pred_data <- function(pred_probs){
+  as_tibble(pred_probs) %>%
+    mutate(
+      # keep predicted probabilities for the positive class only
+      prob = present,
+      class = names(.)[apply(., 1, which.max)]
+    )
+}
+
+
+# Logloss metric for evaluating performance of classifier
+
+logloss <- function(actual_class, pred_prob, eps = 1e-15) {
+  yhat <- pmin(pmax(pred_prob, eps), 1 - eps)
+  logloss <- -(mean(actual_class * log(yhat) + (1 - actual_class) * log(1 - yhat)))
+  return(logloss)
+}
+
+# fct_int convert factor class levels (present/ absent) to integer 0/1
+
+fct_int <- function (class_fct) {
+  class_int =  as.numeric(as.character(fct_recode(class_fct, '0' = 'absent',  '1' = 'present')))
+  return(class_int)
+}
+
+# int_fct convert integer class (1/ 0) to factor class present/absent
+
+int_fct <- function (class_int) {
+  class_fct = fct_recode(factor(class_int), 'absent' = '0',  'present' = '1')
+  return(class_fct)
+}
+
+```
+
+# Training models
+
+```{r model-building1_10}
+
+model_data <- bind_cols(features, y = cleveland_data$heart_disease_present) %>% janitor::clean_names()
+
+# Set the total number of replications 
+
+R <- 200
+
+# Initialize the evaluation metrics matrix for performances of the models
+
+acc_metric <- matrix(0, ncol = 10, nrow = R)
+
+pre_metric <- matrix(0, ncol = 10, nrow = R)
+
+sen_metric <- matrix(0, ncol = 10, nrow = R)
+
+spe_metric <- matrix(0, ncol = 10, nrow = R)
+
+auc_metric <- matrix(0, ncol = 10, nrow = R)
+
+logloss_metric <- matrix(0, ncol = 10, nrow = R)
+
+f1_metric <- matrix(0, ncol = 10, nrow = R)
+
+for (r in 1: R) {
+  
+# Create the training and test datasets for the Cleveland dataset
+  
+split  <- sample(nrow(model_data), nrow(model_data) * 0.8)
+  
+train_clevelandData <- model_data[split, ]
+  
+test_clevelandData <- model_data[-split, ]
+  
+  
+# Store X and Y for later use
+  
+x_train <-  train_clevelandData[-ncol(train_clevelandData)]
+
+y_train <-  train_clevelandData$y
+
+xy_train <- train_clevelandData
+  
+x_test <- test_clevelandData[-ncol(test_clevelandData)]
+  
+y_test <- test_clevelandData$y
+  
+# Converting y_test to class integer
+  
+y_test <- fct_int(y_test)
+
+ntr <- nrow(train_clevelandData)
+nte <- nrow(test_clevelandData)
+  
+
+# Models to consider
+
+# LDA model
+
+lda.model <- train(y ~ ., data = xy_train, method = "lda", trControl = trainControl(method = "cv", number = 10, returnResamp = "all", classProbs = TRUE, summaryFunction = twoClassSummary), metric = "ROC")
+
+lda_pred <- pred_data(pred_probs = predict(lda.model, x_test, type = "prob"))
+
+lda_class <- fct_int(lda_pred$class)
+
+acc_metric[r, 1] <- Metrics::accuracy(y_test, lda_class)
+
+pre_metric[r, 1] <- Metrics::precision(y_test, lda_class)
+
+sen_metric[r, 1] <- Metrics::recall(y_test, lda_class) 
+
+spe_metric[r, 1] <- ModelMetrics::specificity(y_test, lda_class)
+
+auc_metric[r, 1] <- Metrics::auc(y_test, lda_pred$prob)
+
+logloss_metric[r, 1] <- logloss(y_test, lda_pred$prob)
+
+f1_metric[r, 1] <- ModelMetrics::f1Score(y_test, lda_class)
+
+
+# SVM model
+
+svm.model <- train(y ~ ., data = xy_train, method = "svmLinear2", trControl = trainControl(method = "cv", number = 10, returnResamp = "all", classProbs = TRUE), tuneGrid = data.frame(cost = c(.25, .5, 1)))
+
+svm_pred <- pred_data(pred_probs = predict(svm.model, x_test, type = "prob"))
+
+svm_class <- fct_int(svm_pred$class)
+
+acc_metric[r, 2] <- Metrics::accuracy(y_test, svm_class)
+
+pre_metric[r, 2] <- Metrics::precision(y_test, svm_class)
+
+sen_metric[r, 2] <- Metrics::recall(y_test, svm_class) 
+
+spe_metric[r, 2] <- ModelMetrics::specificity(y_test, svm_class)
+
+auc_metric[r, 2] <- Metrics::auc(y_test, svm_pred$prob)
+
+logloss_metric[r, 2] <- logloss(y_test, svm_pred$prob)
+
+f1_metric[r, 2] <- ModelMetrics::f1Score(y_test, svm_class)
+
+# KNN model
+
+knn.model <- train(y ~.,data=xy_train, method = "knn", 
+        trControl=trainControl(method = "cv", number = 10, 
+                               returnResamp = "all", classProbs = TRUE, summaryFunction = twoClassSummary), metric = "ROC")
+
+knn_pred <- pred_data(pred_probs = predict(knn.model, x_test, type = "prob"))
+
+knn_class <- fct_int(knn_pred$class)
+
+acc_metric[r, 3] <- Metrics::accuracy(y_test, knn_class)
+
+pre_metric[r, 3] <- Metrics::precision(y_test, knn_class)
+
+sen_metric[r, 3] <- Metrics::recall(y_test, knn_class) 
+
+spe_metric[r, 3] <- ModelMetrics::specificity(y_test, knn_class)
+
+auc_metric[r, 3] <- Metrics::auc(y_test, knn_pred$prob)
+
+logloss_metric[r, 3] <- logloss(y_test, knn_pred$prob)
+
+f1_metric[r, 3] <- ModelMetrics::f1Score(y_test, knn_class)
+
+# rForest
+
+rforest.model <- train(y ~ ., data = xy_train, method = "rf", trControl = trainControl(method = "cv", number = 10, returnResamp = "all", classProbs = TRUE, summaryFunction = twoClassSummary, seeds = vector(mode = "list", length = nrow(xy_train) + 1) %>% lapply(., function(x) 1:20)), metric = "ROC", ntree = 20,importance = TRUE)
+
+rforest_pred <- pred_data(pred_probs = predict(rforest.model, x_test, type = "prob"))
+
+rforest_class <- fct_int(rforest_pred$class)
+
+acc_metric[r, 4] <- Metrics::accuracy(y_test, rforest_class)
+
+pre_metric[r, 4] <- Metrics::precision(y_test, rforest_class)
+
+sen_metric[r, 4] <- Metrics::recall(y_test, rforest_class) 
+
+spe_metric[r, 4] <- ModelMetrics::specificity(y_test, rforest_class)
+
+auc_metric[r, 4] <- Metrics::auc(y_test, rforest_pred$prob)
+
+logloss_metric[r, 4] <- logloss(y_test, rforest_pred$prob)
+
+f1_metric[r, 4] <- ModelMetrics::f1Score(y_test, rforest_class)
+
+
+# DT
+
+d.tree.model <- train(y ~ ., data = xy_train, method = "rpart", trControl = trainControl(method = "cv", number = 10, returnResamp = "all"))
+
+d.tree_pred <- pred_data(pred_probs = predict(d.tree.model, x_test, type = "prob"))
+
+d.tree_class <- fct_int(d.tree_pred$class)
+
+acc_metric[r, 5] <- Metrics::accuracy(y_test, d.tree_class)
+
+pre_metric[r, 5] <- Metrics::precision(y_test, d.tree_class)
+
+sen_metric[r, 5] <- Metrics::recall(y_test, d.tree_class) 
+
+spe_metric[r, 5] <- ModelMetrics::specificity(y_test, d.tree_class)
+
+auc_metric[r, 5] <- Metrics::auc(y_test, d.tree_pred$prob)
+
+logloss_metric[r, 5] <- logloss(y_test, d.tree_pred$prob)
+
+f1_metric[r, 5] <- ModelMetrics::f1Score(y_test, d.tree_class)
+
+
+# ANN
+
+nnet.model <- train(y ~ ., data = xy_train, method = "nnet",
+  trControl = trainControl(method = "cv", number = 10, returnResamp = "all"), trace = FALSE)
+
+nnet_pred <- pred_data(pred_probs = predict(nnet.model, x_test, type = "prob"))
+
+nnet_class <- fct_int(nnet_pred$class)
+
+acc_metric[r, 6] <- Metrics::accuracy(y_test, nnet_class)
+
+pre_metric[r, 6] <- Metrics::precision(y_test, nnet_class)
+
+sen_metric[r, 6] <- Metrics::recall(y_test, nnet_class) 
+
+spe_metric[r, 6] <- ModelMetrics::specificity(y_test, nnet_class)
+
+auc_metric[r, 6] <- Metrics::auc(y_test, nnet_pred$prob)
+
+logloss_metric[r, 6] <- logloss(y_test, nnet_pred$prob)
+
+f1_metric[r, 6] <- ModelMetrics::f1Score(y_test, nnet_class)
+
+
+# LogitBoost
+
+logit.model <- train(y ~ ., data = xy_train, method = "LogitBoost", trControl = trainControl(method = "cv", number = 10, returnResamp = "all", classProbs = TRUE, summaryFunction = twoClassSummary), metric = "ROC")
+
+logit_pred <- pred_data(pred_probs = predict(logit.model, x_test, type = "prob"))
+
+logit_class <- fct_int(logit_pred$class)
+
+acc_metric[r, 7] <- Metrics::accuracy(y_test, logit_class)
+
+pre_metric[r, 7] <- Metrics::precision(y_test, logit_class)
+
+sen_metric[r, 7] <- Metrics::recall(y_test, logit_class) 
+
+spe_metric[r, 7] <- ModelMetrics::specificity(y_test, logit_class)
+
+auc_metric[r, 7] <- Metrics::auc(y_test, logit_pred$prob)
+
+logloss_metric[r, 7] <- logloss(y_test, logit_pred$prob)
+
+f1_metric[r, 7] <- ModelMetrics::f1Score(y_test, logit_class)
+
+
+# NB
+
+naiveBayes.model <- train(y ~ ., data = xy_train, method = "naive_bayes", trControl = trainControl(method = "cv", number = 10, returnResamp = "all", classProbs = TRUE, summaryFunction = twoClassSummary), metric = "ROC")
+
+naiveBayes_pred <- pred_data(pred_probs = predict(naiveBayes.model, x_test, type = "prob"))
+
+naiveBayes_class <- fct_int(naiveBayes_pred$class)
+
+acc_metric[r, 8] <- Metrics::accuracy(y_test, naiveBayes_class)
+
+pre_metric[r, 8] <- Metrics::precision(y_test, naiveBayes_class)
+
+sen_metric[r, 8] <- Metrics::recall(y_test, naiveBayes_class) 
+
+spe_metric[r, 8] <- ModelMetrics::specificity(y_test, naiveBayes_class)
+
+auc_metric[r, 8] <- Metrics::auc(y_test, naiveBayes_pred$prob)
+
+logloss_metric[r, 8] <- logloss(y_test, naiveBayes_pred$prob)
+
+f1_metric[r, 8] <- ModelMetrics::f1Score(y_test, naiveBayes_class)
+
+
+# XGBTree
+
+xgbtree.model <- train(y ~ ., data = xy_train, 
+                       method = "xgbTree", trControl = trainControl(method = "cv", number = 10, returnResamp = "all", classProbs = TRUE, summaryFunction = twoClassSummary), metric = "ROC", tuneGrid = expand.grid(nrounds = c(1, 10), 
+                       max_depth = c(1, 4), eta = c(.1, .4), gamma = 0, colsample_bytree = .7, min_child_weight = 1, subsample = c(.8, 1)))
+
+xgbtree_pred <- pred_data(pred_probs = predict(xgbtree.model, x_test, type = "prob"))
+
+xgbtree_class <- fct_int(xgbtree_pred$class)
+
+acc_metric[r, 9] <- Metrics::accuracy(y_test, xgbtree_class)
+
+pre_metric[r, 9] <- Metrics::precision(y_test, xgbtree_class)
+
+sen_metric[r, 9] <- Metrics::recall(y_test, xgbtree_class) 
+
+spe_metric[r, 9] <- ModelMetrics::specificity(y_test, xgbtree_class)
+
+auc_metric[r, 9] <- Metrics::auc(y_test, xgbtree_pred$prob)
+
+logloss_metric[r, 9] <- logloss(y_test, xgbtree_pred$prob)
+
+f1_metric[r, 9] <- ModelMetrics::f1Score(y_test, xgbtree_class)
+
+
+# Cforest
+
+cforest.model <- train(y ~ ., data = xy_train, 
+                       method = "cforest", trControl = trainControl(method = "cv", number = 10, returnResamp = "all", classProbs = TRUE, summaryFunction = twoClassSummary, seeds = vector(mode = "list", length = nrow(xy_train) + 1) %>% lapply(., function(x) 1:20)), metric = "ROC", controls = party::cforest_unbiased(ntree = 20))
+
+cforest_pred <- pred_data(pred_probs = predict(cforest.model, x_test, type = "prob"))
+
+cforest_class <- fct_int(cforest_pred$class)
+
+acc_metric[r, 10] <- Metrics::accuracy(y_test, cforest_class)
+
+pre_metric[r, 10] <- Metrics::precision(y_test, cforest_class)
+
+sen_metric[r, 10] <- Metrics::recall(y_test, cforest_class) 
+
+spe_metric[r, 10] <- ModelMetrics::specificity(y_test, cforest_class)
+
+auc_metric[r, 10] <- Metrics::auc(y_test, cforest_pred$prob)
+
+logloss_metric[r, 10] <- logloss(y_test, cforest_pred$prob)
+
+f1_metric[r, 10] <- ModelMetrics::f1Score(y_test, cforest_class)
+
+  if (r %% 25 == 0)  cat('\n', paste(round(100 * r / R, 0), '%', 'completed\n'))
+}
+
+```
+
+# Evaluation metric tables
+
+```{r Performance_metrics}
+col_names <- c("LDA", "SVM", "KNN", "Rforest", "DT", "ANN", "Logit", "NB", "XGBTree", "Cforest")
+
+# Accuracy across 200 replications
+
+colnames(acc_metric) <- col_names
+
+acc_metric <- as_tibble(acc_metric)
+
+# Precision across 200 replications
+
+colnames(pre_metric) <- col_names
+
+pre_metric <- as_tibble(pre_metric)
+
+# Sensitivity across 200 replications
+
+colnames(sen_metric) <- col_names
+
+sen_metric <- as_tibble(sen_metric)
+
+# Specificity across 200 replications
+
+colnames(spe_metric) <- col_names
+
+spe_metric <- as_tibble(spe_metric)
+
+
+# AUC across 200 replications
+
+colnames(auc_metric) <- col_names
+
+auc_metric <- as_tibble(auc_metric)
+
+
+# Logloss across 200 replications
+
+colnames(logloss_metric) <- col_names
+
+logloss_metric <- as_tibble(logloss_metric)
+
+# F1 across 200 replications
+
+colnames(f1_metric) <- col_names
+
+f1_metric <- as_tibble(logloss_metric)
+```
+
+# Evaluation metric plots
+
+```{r plot_metric}
+plot_metric <- function(df, metric = 'name_metric') {
+  df %>% 
+pivot_longer(1:10, names_to = "models", values_to = "metric") %>%
+    ggplot(., aes(x = reorder(models, metric, FUN = median), y = metric, fill = models)) + geom_boxplot(show.legend = FALSE, width = 0.3, outlier.size = 1, outlier.shape = 5, outlier.colour = "purple") + theme_bw() + labs(y = paste0(metric), x = "Method (Classifier)") + theme(axis.title.x = element_text(face = "bold", size = 12), axis.title.y = element_text(face = "bold", size = 12), axis.text.x = element_text(angle = 50, vjust = 0.5, face = "bold"))
+
+}
+
+```
+
+```{r accuracy}
+plot_metric(acc_metric, 'Accuracy')
+
+ggsave('Heart-disease-data-analysis/Models-evaluation-metrics-figures-and-tables/Accuracy.png', width = 6.74, height = 4.54)
+```
+
+
+```{r Precision}
+plot_metric(pre_metric, 'Precision')
+
+ggsave('Heart-disease-data-analysis/Models-evaluation-metrics-figures-and-tables/Precision.png', width = 6.74, height = 4.54)
+
+```
+
+
+```{r Sensitivity}
+plot_metric(sen_metric, 'Sensitivity')
+
+ggsave('Heart-disease-data-analysis/Models-evaluation-metrics-figures-and-tables/Sensitivity.png', width = 6.74, height = 4.54)
+```
+
+
+```{r Specificity}
+plot_metric(spe_metric, 'Specificity')
+
+ggsave('Heart-disease-data-analysis/Models-evaluation-metrics-figures-and-tables/Specificity.png', width = 6.74, height = 4.54)
+
+```
+
+```{r auc}
+plot_metric(auc_metric, 'AUC')
+
+ggsave('Heart-disease-data-analysis/Models-evaluation-metrics-figures-and-tables/AUC.png', width = 6.74, height = 4.54)
+
+```
+
+
+```{r f1}
+plot_metric(f1_metric, 'F1 score')
+
+ggsave('Heart-disease-data-analysis/Models-evaluation-metrics-figures-and-tables/F1_score.png', width = 6.74, height = 4.54)
+```
+
+
+```{r logloss}
+plot_metric(logloss_metric, 'logLoss')
+
+ggsave('Heart-disease-data-analysis/Models-evaluation-metrics-figures-and-tables/Log-loss.png', width = 6.74, height = 4.54)
+
+```
+
+
+# Table of ranks of models for each metric
+
+```{r Accuracy_rank}
+
+# Table of mean, median, standard deviation
+
+acc_table <- acc_metric %>%
+    pivot_longer(1:10, names_to = "models", values_to = "accuracy") %>%
+  group_by(models) %>%
+  summarise(avg_accuracy = round(mean(accuracy), 4), med_accuracy = round(median(accuracy), 4), std_accuracy = round(sd(accuracy), 4))
+
+
+# Table of  rank
+
+acc_table.rk <- acc_table %>% mutate(avg_accuracy.rk = rank(desc(avg_accuracy)), med_accuracy.rk = rank(desc(med_accuracy)), std_accuracy.rk = rank(std_accuracy)) %>% arrange(med_accuracy.rk) 
+
+acc_table.rk %>% write_csv("Heart-disease-data-analysis/Models-evaluation-metrics-figures-and-tables/acc_table.rk.csv")
+```
+
+
+```{r Precision_rank}
+
+# Table of mean, median, standard deviation 
+
+precision_table <- pre_metric %>% 
+  pivot_longer(1:10, names_to = "models", values_to = "precision") %>%
+  group_by(models) %>% summarise(avg_precision = round(mean(precision),4), med_precision = round(median(precision), 4), std_precision = round(sd(precision), 4))
+
+# Table of  rank
+
+precision_table.rk <- precision_table %>% mutate(avg_precision.rk=rank(desc(avg_precision)), med_precision.rk =rank(desc(med_precision)), std_precision.rk=rank(std_precision)) %>% arrange(med_precision.rk)
+
+precision_table.rk %>% write_csv('Heart-disease-data-analysis/Models-evaluation-metrics-figures-and-tables/precision_table.rk.csv')
+```
+
+
+```{r Sensitivity_rank}
+
+# Table of mean, median, standard deviation 
+
+sensitivity_table <- sen_metric %>%
+  pivot_longer(1:10, names_to = "models", values_to = "sensitivity") %>%
+  group_by(models) %>% summarise(avg_sensitivity = round(mean(sensitivity),4), med_sensitivity = round(median(sensitivity), 4), std_sensitivity = round(sd(sensitivity), 4))
+
+# Table of  rank
+
+sensitivity_table.rk <- sensitivity_table %>% mutate(avg_sensitivity.rk = rank(desc(avg_sensitivity)), med_sensitivity.rk = rank(desc(med_sensitivity)), std_sensitivity.rk = rank(std_sensitivity)) %>% arrange(med_sensitivity.rk)
+
+sensitivity_table.rk %>% write_csv("Heart-disease-data-analysis/Models-evaluation-metrics-figures-and-tables/sensitivity_table.rk.csv")
+```
+
+```{r Specificity_rank}
+
+# Table of mean, median, standard deviation
+
+specificity_table <- spe_metric %>%
+  pivot_longer(1:10, names_to = "models", values_to = "specificity") %>%
+  group_by(models) %>%
+  summarise(avg_specificity = round(mean(specificity), 4), med_specificity = round(median(specificity), 4), std_specificity = round(sd(specificity), 4))
+
+# Table of rank
+
+specificity_table.rk <- specificity_table %>% mutate(avg_specificity.rk = rank(desc(avg_specificity)), med_specificity.rk = rank(desc(med_specificity)), std_specificity.rk = rank(std_specificity)) %>% arrange(med_specificity.rk)
+
+specificity_table.rk %>% write_csv("Heart-disease-data-analysis/Models-evaluation-metrics-figures-and-tables/specificity_table.rk.csv")
+```
+
+```{r AUC_rank}
+
+# Table of mean, median, standard deviation 
+
+auc_table <- auc_metric %>%
+  pivot_longer(1:10, names_to = "models", values_to = "auc") %>%
+  group_by(models) %>%
+  summarise(avg_AUC = round(mean(auc), 4), med_AUC = round(median(auc), 4), std_AUC = round(sd(auc), 4))
+
+# Table of  rank
+
+auc_table.rk <- auc_table %>% mutate(avg_AUC.rk = rank(desc(avg_AUC)), med_AUC.rk = rank(desc(med_AUC)), std_AUC.rk = rank(std_AUC)) %>% arrange(med_AUC.rk) 
+
+auc_table.rk %>% write_csv("Heart-disease-data-analysis/Models-evaluation-metrics-figures-and-tables/AUC_table.rk.csv")
+```
+
+
+```{r F1_rank}
+
+# Table of mean, median, standard deviation
+
+f1_table <- f1_metric %>%
+ pivot_longer(1:10, names_to = "models", values_to = "f1_score") %>%
+  group_by(models) %>%
+  summarise(avg_F1 = round(mean(f1_score), 4), med_F1 = round(median(f1_score), 4), std_F1 = round(sd(f1_score, 4)))
+
+# Table of  rank
+
+f1_table.rk <- f1_table %>% mutate(avg_F1.rk = rank(desc(avg_F1)), med_F1.rk = rank(desc(med_F1)), std_F1.rk = rank(std_F1)) %>% arrange(med_F1.rk)
+
+f1_table.rk %>% write_csv("Heart-disease-data-analysis/Models-evaluation-metrics-figures-and-tables/F1_table.rk.csv")
+```
+
+
+```{r logLoss_rank}
+
+# Table of mean, median, standard deviation
+
+logloss_table <- logloss_metric %>%
+ pivot_longer(1:10, names_to = "models", values_to = "logloss") %>%
+  group_by(models) %>%
+  summarise(avg_logloss = round(mean(logloss), 4), med_logloss = round(median(logloss), 4), std_logloss = round(sd(logloss), 4))
+
+# Table of  rank
+
+logloss_table.rk <- logloss_table %>% mutate(avg_logloss.rk = rank(avg_logloss), med_logloss.rk = rank(med_logloss), std_logloss.rk = rank(std_logloss)) %>% arrange(std_logloss.rk)
+
+logloss_table.rk %>% write_csv("Heart-disease-data-analysis/Models-evaluation-metrics-figures-and-tables/logloss_table.rk.csv")
+
+```
+
+
+# Validation dataset from the Statlog heart disease database
+
+```{r statlog_data_data}
+statlog_data <- read_xlsx('data/heart_disease_database.xlsx', sheet = 2) %>% 
+  mutate(across(.cols = c(7, 12), as.character))
+
+statlog_data <-  statlog_data %>% 
+  mutate(heart_disease_present= factor(ifelse(heart_disease_present == 0, 'absent', 'present')))
+                             
+# Changing the data types to the right type in statlog_data data
+
+statlog_data <-  
+  statlog_data %>% 
+  mutate(across(!where(is_double) , as_factor))
+
+```
+
+
+```{r statlog_data_scaling}
+
+# Scaling the continuous variables
+
+statlog_data_scaling <- predict(preProcess_scale_model, statlog_data)
+```
+
+```{r statlog_data_One_hot_encoding}
+# Removing the class column on train data to be able to create a one hot encoding
+
+statlog_data_one_hot <- statlog_data_scaling[-length(statlog_data_scaling)]
+
+# `fullRank = T` to avoid dummmy trap
+
+statlog_data_one_hot <- predict(dummies, newdata = statlog_data_one_hot)
+
+# Convert to dataframe
+
+statlog_data_one_hot <- as_tibble(statlog_data_one_hot)
+
+```
+
+```{r statlog_data_Feature_selection}
+
+# Eliminate low variance features
+
+statlog_data_low_var_rm <- statlog_data_one_hot[, -low_variance_cols] # dropped restecg.1 variable
+
+# recursive features selection
+
+# We shall include features that have variable of importance greater than or equal to 10
+
+x_statlog_data <- statlog_data_low_var_rm %>% dplyr::select(all_of(features_selection)) %>% janitor::clean_names()
+
+y_statlog_data <- statlog_data$heart_disease_present
+
+```
+
+# Validating the best model (SVM) on statlog_data set
+
+```{r Model_Production}
+svm_val_pred <- pred_data(pred_probs = predict(svm.model, x_statlog_data, type = "prob"))
+
+svm_val_class <- as.factor(svm_val_pred$class)
+```
+
+# Confusion matrix with some other metrics
+
+```{r confusion matrix}
+cm <- confusionMatrix(svm_val_class, y_statlog_data, positive = 'present')
+
+cm$byClass[6] <- ModelMetrics::auc(y_statlog_data, svm_val_pred$prob)
+
+cm$byClass[11] <- logloss(fct_int(y_statlog_data), svm_val_pred$prob)
+
+names(cm$byClass) = c("Sensitivity", "Specificity", "Pos Pred Value", "Neg Pred Value", "Precision", "AUC", "F1 score", "Prevalence", "Detection Rate", "Detection Prevalence", "logloss")
+
+conf_matrix_cust_plot <- function(cm_input, model_pred, class_label1 = "Class Negative", class_label2 = "Class Positive", quadrant_col1 = "#3F97D0", quadrant_col2 = "#F7AD50", custom_title = "Confusion matrix", text_col = "black", round_dig = 2) {
+  layout(matrix(c(1, 1, 2)))
+  par(mar = c(2, 2, 2, 2))
+  plot(c(100, 345), c(300, 450), type = "n", xlab = "", ylab = "", xaxt = "n", yaxt = "n")
+
+# n is specified in plot to indicate no plotting
+  title(custom_title, cex.main = 2)
+
+  # Create the matrix visualisation using custom rectangles and text items on the chart
+ rect(150, 430, 240, 370, col = '#009900')
+ text(195, 435, class_label1, cex = 1.2)
+ rect(250, 430, 340, 370, col = quadrant_col2)
+ text(295, 435, class_label2, cex = 1.2)
+  text(125, 370, "Predicted", cex = 1.3, srt = 90, font = 2)
+  text(245, 450, "Actual", cex = 1.3, font = 2)
+  rect(150, 305, 240, 365, col = quadrant_col2)
+  rect(250, 305, 340, 365, col = '#ff0000')
+  text(140, 400, class_label1, cex = 1.2, srt = 90)
+  text(140, 335, class_label2, cex = 1.2, srt = 90)
+
+# Add the results of the confusion matrix - as these will be saved to cm$table
+  result <- as.numeric(cm$table)
+  text(195, 400, result[1], cex = 1.6, font = 2, col = text_col)
+  text(195, 335, result[2], cex = 1.6, font = 2, col = text_col)
+  text(295, 400, result[3], cex = 1.6, font = 2, col = text_col)
+  text(295, 335, result[4], cex = 1.6, font = 2, col = text_col)
+
+# Add in other confusion matrix statistics
+  plot(c(100, 0), c(100, 0), type = "n", xlab = "", ylab = "",    main = "Model performance metrics", xaxt = "n", yaxt = "n")
+  text(10, 85, names(cm$byClass[1]), cex = 1.6, font = 2)
+  text(10, 70, round(as.numeric(cm$byClass[1]), round_dig), cex = 1.2)
+  text(30, 85, names(cm$byClass[2]), cex = 1.6, font = 2)
+  text(30, 70, round(as.numeric(cm$byClass[2]), round_dig), cex = 1.2)
+  text(50, 85, names(cm$byClass[5]), cex = 1.6, font = 2)
+  text(50, 70, round(as.numeric(cm$byClass[5]), round_dig), cex = 1.2)
+  text(65, 85, names(cm$byClass[6]), cex = 1.6, font = 2)
+  text(65, 70, round(as.numeric(cm$byClass[6]), round_dig), cex = 1.2)
+  text(86, 85, names(cm$byClass[11]), cex = 1.6, font = 2)
+  text(86, 70, round(as.numeric(cm$byClass[11]), round_dig), cex = 1.2)
+
+  # add in the accuracy information
+  text(30, 35, names(cm$overall[1]), cex = 1.5, font = 2)
+  text(30, 20, round(as.numeric(cm$overall[1]), 4), cex = 1.4)
+  text(70, 35, names(cm$byClass[7]), cex = 1.5, font = 2)
+  text(70, 20, round(as.numeric(cm$byClass[7]), round_dig), cex = 1.4)
+}
+
+
+conf_matrix_cust_plot(cm,
+  class_label1 = "Absent",
+  class_label2 = "Present",
+  quadrant_col1 = "#009900",
+  quadrant_col2 = "#ec008e",
+  custom_title = "",
+  round_dig = 3
+)
+
+```
+# The end!
