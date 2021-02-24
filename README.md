@@ -3,5 +3,5 @@
 
 ## Online version
 
-A basic version of this project is on Rpubs by RStudio at https://rpubs.com/gbganalyst/heart_disease
+A basic version of this project is on RPubs by RStudio at https://rpubs.com/gbganalyst/heart_disease
 
