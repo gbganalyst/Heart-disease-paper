@@ -31,7 +31,9 @@ if (!require(install.load)) {
   install.packages("install.load")
 }
 
-install.load::install_load(c("tidyverse", "readxl", "writexl", "inspectdf", "caret", "janitor", "infer"))
+install.load::install_load(c("tidyverse", "readxl", "writexl", "inspectdf", "caret", "janitor", "infer", "ggchicklet"))
+
+# remotes::install_git("https://git.rud.is/hrbrmstr/ggchicklet.git")
 
 theme_set(theme_bw())
 ```
@@ -133,15 +135,15 @@ statlog_response <-  statlog_data %>%
 cleveland_statlog_response <- bind_rows(cleveland_response, statlog_response)
 
 p <- cleveland_statlog_response %>% 
-  ggplot(aes(x = heart_disease_status , y = n, col= heart_disease_status))+ geom_segment(aes(xend = heart_disease_status, yend = 0),size = 1.5, lineend = "square", show.legend = FALSE) +
-  geom_point(size = 10, show.legend = FALSE)+ facet_wrap(~data)+ 
-  scale_colour_manual(values = c("green", "red"))+
+  ggplot(aes(x = heart_disease_status, y = n, fill= heart_disease_status))+ ggchicklet::geom_chicklet(show.legend = FALSE, width = 0.3)+ facet_wrap(~data)+ 
+  scale_fill_manual(values = c("#1b9e77", "#d95f02"), labels = c("present", "absent"))+
   labs(x = 'Heart disease status', y = 'Number of patients') +
-  geom_text(aes(label = scales::percent(pct)), vjust= -0, size=2.5, colour = 'black')+
-  theme(axis.title.y = element_text(size = 12, face ='bold'), axis.title.x = element_text(size = 12, face='bold'), axis.text.x = element_text(vjust = 0.3, face = "bold"))
+  geom_text(aes(label = scales::percent(pct)), vjust= -0, size= 3, colour = 'black')+
+  theme(axis.title.y = element_text(size = 12, face ='bold'), axis.title.x = element_text(size = 12, face='bold'), axis.text.x = element_text(vjust = 0.3))
 
+p
 
-ggsave(p, "Heart-disease-data-analysis/Exploratory-data-analysis/Cleveland-Statlog.png", width = 6.74, height = 4.54)
+ggsave(plot = p, "Heart-disease-data-analysis/Exploratory-data-analysis/Cleveland-Statlog1.png", width = 6.74, height = 4.54)
 ```
 
 # Distribution of continuous features in the Cleveland dataset by heart disease status
